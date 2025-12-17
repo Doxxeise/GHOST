@@ -8,7 +8,7 @@ import {
 } from 'firebase/auth';
 import {
   getDatabase, ref, push, onValue, query,
-  orderByChild, limitToLast, serverTimestamp, onChildAdded, set
+  orderByChild, limitToLast, serverTimestamp, onChildAdded, set, remove
 } from 'firebase/database';
 
 // --- FIREBASE CONFIGURATION ---
@@ -50,6 +50,7 @@ interface Message {
     senderName: string;
     text: string;
   };
+  isPoltergeist?: boolean;
 }
 
 // ==========================================
@@ -131,22 +132,12 @@ const useEmojiLibrary = (user: FirebaseUser | null) => {
 /**
  * Hook: Manages Global Poltergeist Mode
  */
+/**
+ * Hook: Manages Local Poltergeist Mode (Sender preference)
+ */
 const usePoltergeistMode = () => {
   const [enabled, setEnabled] = useState(false);
-
-  useEffect(() => {
-    const modeRef = ref(db, `artifacts/${sanitizedAppId}/public/data/state/poltergeist_mode`);
-    const unsubscribe = onValue(modeRef, (snapshot) => {
-      setEnabled(!!snapshot.val());
-    });
-    return () => unsubscribe();
-  }, []);
-
-  const toggleMode = () => {
-    const modeRef = ref(db, `artifacts/${sanitizedAppId}/public/data/state/poltergeist_mode`);
-    set(modeRef, !enabled);
-  };
-
+  const toggleMode = () => setEnabled(prev => !prev);
   return { enabled, toggleMode };
 };
 
@@ -188,15 +179,14 @@ const EmojiOverlay = ({ emojis }: { emojis: FloatingEmoji[] }) => {
  */
 const EmojiDock = ({ onReact }: { onReact: (emoji: string) => void }) => {
   return (
-    <div className="flex items-center justify-center gap-3 mb-4 animate-slide-up">
+    <div className="flex items-center justify-center gap-1 mb-2 animate-slide-up">
       {LIBRARY_EMOJIS.map(emoji => (
         <button
           key={emoji}
           onClick={() => onReact(emoji)}
-          className="group relative p-3 bg-white/5 hover:bg-white/10 active:bg-white/20 rounded-2xl border border-white/5 backdrop-blur-md shadow-lg transition-all duration-300 hover:scale-110 active:scale-95"
+          className="group relative p-2 rounded-xl hover:bg-white/5 transition-all duration-200 active:scale-95"
         >
-          <span className="text-2xl filter drop-shadow-md group-hover:drop-shadow-[0_0_15px_rgba(255,255,255,0.6)] transition-all">{emoji}</span>
-          <div className="absolute inset-0 rounded-2xl bg-gradient-to-tr from-white/0 to-white/10 opacity-0 group-hover:opacity-100 transition-opacity" />
+          <span className="text-xl filter drop-shadow-md group-hover:scale-110 transition-transform block">{emoji}</span>
         </button>
       ))}
     </div>
@@ -371,12 +361,8 @@ export default function GhostChat() {
     setProfile({ name: '', color: '', id: '' });
   };
 
-  const sendMessage = async (e?: React.FormEvent) => {
-    e?.preventDefault();
-    if (!inputText.trim() || !user) return;
-    const text = inputText;
-    setInputText('');
-
+  const postMessage = async (text: string) => {
+    if (!text.trim() || !user) return;
     try {
       const messagesListRef = ref(db, `artifacts/${sanitizedAppId}/public/data/ghost_messages`);
       const payload: any = {
@@ -384,6 +370,7 @@ export default function GhostChat() {
         senderId: user.uid,
         senderName: profile.name,
         senderColor: profile.color,
+        isPoltergeist: poltergeistMode,
         timestamp: serverTimestamp()
       };
 
@@ -402,6 +389,35 @@ export default function GhostChat() {
       showNotification("Failed to broadcast.");
     }
   };
+
+  const sendMessage = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (!inputText.trim()) return;
+    await postMessage(inputText);
+    setInputText('');
+  };
+
+  const handleReaction = (emoji: string) => {
+    triggerReaction(emoji);
+    postMessage(emoji);
+  };
+
+  useEffect(() => {
+    if (!user) return;
+    const cleanupInterval = setInterval(() => {
+      const now = Date.now();
+      messages.forEach(msg => {
+        if (msg.senderId === user.uid && msg.isPoltergeist) {
+          const timeSince = now - (msg.timestamp || now);
+          if (timeSince > 30500) { // Slight buffer over 30s to allow fade animation to finish on clients
+            remove(ref(db, `artifacts/${sanitizedAppId}/public/data/ghost_messages/${msg.id}`))
+              .catch(err => console.error("Cleanup failed", err));
+          }
+        }
+      });
+    }, 5000);
+    return () => clearInterval(cleanupInterval);
+  }, [user, messages]);
 
   const showNotification = (msg: string) => {
     setNotification(msg);
@@ -449,7 +465,7 @@ export default function GhostChat() {
         @keyframes slideUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
         .animate-slide-up { animation: slideUp 0.6s ease-out forwards; }
 
-        @keyframes fadeOut { from { opacity: 1; filter: blur(0px); } to { opacity: 0; filter: blur(10px); } }
+        @keyframes fadeOut { from { opacity: 1; filter: blur(0px); } to { opacity: 0; filter: blur(4px); } }
       `}</style>
 
       {/* Render the Library's Emoji Layer */}
@@ -467,8 +483,8 @@ export default function GhostChat() {
 
       <header className="relative z-20 h-16 border-b border-white/5 bg-black/20 backdrop-blur-2xl flex items-center justify-between px-6 shadow-2xl">
         <div className="flex items-center gap-3 group cursor-default">
-          <div className="p-2.5 bg-gradient-to-tr from-violet-900/50 to-indigo-900/50 border border-white/10 rounded-xl shadow-lg shadow-violet-900/20 animate-float">
-            <img src="/logo.png" alt="GhostChat Logo" className="w-[18px] h-[18px] drop-shadow-[0_0_5px_rgba(255,255,255,0.5)]" />
+          <div className="p-2 animate-float">
+            <img src="/logo.png" alt="GhostChat Logo" className="w-[32px] h-[32px] drop-shadow-[0_0_10px_rgba(167,139,250,0.5)]" />
           </div>
           <div>
             <h1 className="font-bold text-transparent bg-clip-text bg-gradient-to-r from-white to-slate-400 tracking-tight leading-none glitch-hover transition-all cursor-pointer">GhostChat</h1>
@@ -519,12 +535,12 @@ export default function GhostChat() {
           const showHeader = idx === 0 || messages[idx - 1].senderId !== msg.senderId;
 
           const timeSince = Date.now() - (msg.timestamp || Date.now());
-          const fadeDuration = 1000; // 1 second
-          const lifeTime = 15000; // 15 seconds total life
-          const fadeStart = lifeTime - fadeDuration; // 14 seconds
+          const fadeDuration = 5000; // 5 seconds
+          const lifeTime = 30000; // 30 seconds total life
+          const fadeStart = lifeTime - fadeDuration; // 29 seconds
 
-          const shouldFade = poltergeistMode && timeSince < lifeTime;
-          const isGone = poltergeistMode && timeSince >= lifeTime;
+          const shouldFade = msg.isPoltergeist && timeSince < lifeTime;
+          const isGone = msg.isPoltergeist && timeSince >= lifeTime;
 
           if (isGone) return null;
 
@@ -533,7 +549,7 @@ export default function GhostChat() {
               key={msg.id}
               className={`flex flex-col ${isMe ? 'items-end' : 'items-start'} group animate-enter`}
               style={shouldFade ? {
-                animation: `messageEnter 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards, fadeOut ${fadeDuration}ms linear forwards`,
+                animation: `messageEnter 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards, fadeOut ${fadeDuration}ms ease-out forwards`,
                 animationDelay: `0s, ${Math.max(0, fadeStart - timeSince)}ms`
               } : {}}
             >
@@ -582,7 +598,7 @@ export default function GhostChat() {
       <footer className="relative z-20 p-4 pt-0">
 
         {/* Emoji Library Dock */}
-        <EmojiDock onReact={triggerReaction} />
+        <EmojiDock onReact={handleReaction} />
 
         {/* Reply Preview Banner */}
         {replyingTo && (
@@ -651,8 +667,8 @@ function LoginScreen({ onJoin, isAuthReady, authError, onRetry }: { onJoin: (nam
         `}</style>
 
         <div className="text-center mb-10">
-          <div className="w-20 h-20 bg-gradient-to-tr from-violet-600 to-indigo-600 rounded-3xl flex items-center justify-center mx-auto mb-6 shadow-xl shadow-indigo-500/20 animate-float ring-1 ring-white/20">
-            <img src="/logo.png" alt="GhostChat Logo" className="w-[40px] h-[40px] drop-shadow-md" />
+          <div className="w-24 h-24 flex items-center justify-center mx-auto mb-6 animate-float">
+            <img src="/logo.png" alt="GhostChat Logo" className="w-[80px] h-[80px] drop-shadow-[0_0_25px_rgba(167,139,250,0.6)]" />
           </div>
           <h1 className="text-4xl font-bold text-white mb-2 tracking-tight">GhostChat</h1>
           <p className="text-slate-400 text-sm font-medium tracking-wide">Enter the void. Leave no trace.</p>
